@@ -48,10 +48,6 @@ class Config(Resource):
         global config, tick_count, STARTED
         
         config_data = request.json
-
-        # set news_headlines if not present
-        if "news_headlines" not in config_data:
-            config_data['news_headlines'] = []
         
         with lock:
             config.update(config_data)

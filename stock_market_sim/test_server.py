@@ -38,6 +38,16 @@ def test_get_market_data(client):
     assert 'GOOG' in response.json
 
 def test_place_order_buy(client):
+    # reset the user's assets and money
+    response = client.post('/start-server', json={
+        'stocks': {'AAPL': {'price': 150}, 'GOOG': {'price': 2800}},
+        'users': {'user1': {'assets': {'AAPL': 10}, 'money': 10000}},
+        'stock_std': 1.0,
+        'headline_min_impact': 1.1,
+        'headline_max_impact': 2.0,
+        'news_headlines': []
+    })
+
     response = client.post('/order/user1', json={
         'stock': 'AAPL',
         'quantity': 5,
@@ -52,6 +62,17 @@ def test_place_order_buy(client):
     assert user_data['money'] < 10000
 
 def test_place_order_sell(client):
+    # reset the user's assets and money
+    response = client.post('/start-server', json={
+        'stocks': {'AAPL': {'price': 150}, 'GOOG': {'price': 2800}},
+        'users': {'user1': {'assets': {'AAPL': 10}, 'money': 10000}},
+        'stock_std': 1.0,
+        'headline_min_impact': 1.1,
+        'headline_max_impact': 2.0,
+        'news_headlines': []
+    })
+
+    response = client.get('/market-data')
     response = client.post('/order/user1', json={
         'stock': 'AAPL',
         'quantity': 5,
@@ -62,7 +83,7 @@ def test_place_order_sell(client):
     
     user_data = response.json
     
-    assert user_data['assets']['AAPL'] == 10
+    assert user_data['assets']['AAPL'] == 5
     assert user_data['money'] > 10000
 
 def test_add_news(client):
