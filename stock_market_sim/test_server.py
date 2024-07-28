@@ -1,9 +1,7 @@
 import pytest
-from threading import Thread
 from time import sleep
-import uuid
 
-from server import app, start_simulation_thread, exchanges
+from server import app, exchanges
 
 @pytest.fixture
 def client():
@@ -132,6 +130,19 @@ def test_isolation_between_exchanges(client, start_simulations):
     prices_2 = response_2.json['prices']
 
     assert prices_1['AAPL'] != prices_2['AAPL']
+
+def test_exchange_stops_after_duration(client, start_simulations):
+    response = client.post('/start-server', json={
+        'stocks': ['AAPL', 'GOOG'],
+        'duration': 0.25, # 15 seconds
+        'difficulty': 1
+    })
+    assert response.status_code == 200
+    exchange_id = response.json['exchange_id']
+    
+    sleep(20)  
+    
+    assert exchange_id not in exchanges
 
 if __name__ == "__main__":
     pytest.main()
