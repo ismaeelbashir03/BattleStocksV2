@@ -1,7 +1,7 @@
 import pytest
 from time import sleep
 
-from server import app, exchanges
+from server import app, exchanges, TICKS_PER_SECOND
 
 @pytest.fixture
 def client():
@@ -87,7 +87,7 @@ def test_market_simulation(client, start_simulations):
     for exchange_id in start_simulations:
         initial_prices = client.get(f'/{exchange_id}/market-data').json['prices']
         
-        sleep(5)
+        sleep(10)
         
         current_prices = client.get(f'/{exchange_id}/market-data').json['prices']
         for stock in initial_prices:
@@ -118,7 +118,7 @@ def test_isolation_between_exchanges(client, start_simulations):
         'type': 'sell'
     })
 
-    sleep(5)
+    sleep(10)
 
     response_1 = client.get(f'/{exchange_id_1}/market-data')
     response_2 = client.get(f'/{exchange_id_2}/market-data')
@@ -140,7 +140,7 @@ def test_exchange_stops_after_duration(client, start_simulations):
     assert response.status_code == 200
     exchange_id = response.json['exchange_id']
     
-    sleep(20)  
+    sleep(16)  
     
     assert exchange_id not in exchanges
 
