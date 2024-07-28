@@ -1,4 +1,6 @@
+from collections import deque
 import string
+from typing import List
 from flask import Flask, request, jsonify
 from flask_restx import fields, Resource, Api
 import random
@@ -20,31 +22,32 @@ GLOBAL VARS
 exchanges = {}
 TICKS_PER_SECOND = 1
 CODE_LENGTH = 6
+NEWS_IMPACT_DURATION = 10
 DIFFICULTY_MAP = {
     1: {
         'stock_std': 0.5,
-        'headline_min_impact': 3,
-        'headline_max_impact': 3
+        'headline_min_impact': 2,
+        'headline_max_impact': 2
     },
     2: {
         'stock_std': 0.65,
-        'headline_min_impact': 2,
-        'headline_max_impact': 3,
+        'headline_min_impact': 1.5,
+        'headline_max_impact': 2,
     },
     3: {
         'stock_std': 0.8,
         'headline_min_impact': 1,
-        'headline_max_impact': 3,
+        'headline_max_impact': 2,
     },
     4: {
         'stock_std': 1,
-        'headline_min_impact': 0.95,
+        'headline_min_impact': 0.85,
         'headline_max_impact': 2,
     },
     5: {
         'stock_std': 2,
-        'headline_min_impact': 0.9,
-        'headline_max_impact': 1.5,
+        'headline_min_impact': 0.8,
+        'headline_max_impact': 2,
     }
 }
 STARTING_PRICE_RANGE = range(50, 150)
@@ -101,7 +104,7 @@ class Config(Resource):
             exchanges[exchange_id] = {
                 'settings': {},
                 'stocks': {},
-                'news_headlines': [],
+                'news_headlines': deque(),
                 'users': {},
                 'tick_count': 0,
                 'STARTED': False,
@@ -255,10 +258,48 @@ api.add_resource(Orders, '/<string:exchange_id>/order')
 '''
 SIMULATION
 '''
-def simulate_market(exchange_id, timeout):
+class DecayEffect:
+    """
+    Class to represent a decay effect of a news headline on a stock.
+    """
+    def __init__(self, stock: str, total_impact: float, duration: int, sentiment: str):
+        """
+        :param stock: The stock symbol.
+        :param total_impact: The total impact of the news headline.
+        :param duration: The duration of the decay effect in ticks.
+        :param sentiment: The sentiment of the news headline.
+        """
+        self.stock = stock
+        self.total_impact = total_impact
+        self.remaining_ticks = duration
+        self.sentiment = sentiment
+
+    def decay(self, stock_price: float) -> float:
+        """
+        Decay the impact of the news headline on the stock price.
+        :param stock_price: The current stock price.
+        :return: The new stock price after the decay effect.
+        """
+
+        per_tick_impact = (self.total_impact - 1) / self.remaining_ticks
+        self.remaining_ticks -= 1
+
+        if self.sentiment == 'up':
+            return stock_price * (1 + per_tick_impact)
+        else:
+            return stock_price / (1 + per_tick_impact)
+
+def simulate_market(exchange_id: str, timeout: int):
+    """
+    Simulate the stock market for a given exchange.
+    :param exchange_id: The exchange ID.
+    :param timeout: The duration of the simulation in minutes.
+    """
     global exchanges
 
     start = time.time()
+    decay_effects: List[DecayEffect] = []
+
     while True:
         if time.time() - start > timeout * 60:
             with exchanges[exchange_id]['lock']:
@@ -274,20 +315,39 @@ def simulate_market(exchange_id, timeout):
             exchanges[exchange_id]['tick_count'] += 1
             config = exchanges[exchange_id]
 
-            for stock in config['stocks']:
-                config['stocks'][stock] += random.gauss(0, config['settings']['stock_std'])
+            if len(decay_effects) == 0: # only update stock prices randomly if there are no decay effects
+                for stock in config['stocks']:
+                    config['stocks'][stock] += random.gauss(0, config['settings']['stock_std'])
             
+            
+            for effect in decay_effects[:]:
+                config['stocks'][effect.stock] = effect.decay(config['stocks'][effect.stock])
+                if effect.remaining_ticks <= 0:
+                    decay_effects.remove(effect)
+
             if config['news_headlines']:
-                headline = config['news_headlines'].pop(0)
+                headline = config['news_headlines'].popleft()
                 stock = headline['stock']
                 sentiment = headline['sentiment']
                 impact = random.uniform(config['settings']['headline_min_impact'], config['settings']['headline_max_impact'])
-                config['stocks'][stock] *= impact if sentiment == 'up' else 1/impact
+                decay_effects.append(DecayEffect(stock, impact, NEWS_IMPACT_DURATION, sentiment))
+            
+            for user_id, user in config['users'].items():
+                user['value'] = user['cash']
+                for stock, quantity in user['assets'].items():
+                    user['value'] += config['stocks'][stock] * quantity
+                config['users'][user_id] = user
         
     # delete exchange if simulation is over
     del exchanges[exchange_id]
 
-def start_simulation_thread(exchange_id, timeout):
+def start_simulation_thread(exchange_id: str, timeout: int) -> threading.Thread:
+    """
+    Start a thread to simulate the stock market for a given exchange.
+    :param exchange_id: The exchange ID.
+    :param timeout: The duration of the simulation in minutes.
+    :return: The thread object.
+    """
     thread = threading.Thread(target=simulate_market, args=(exchange_id, timeout,))
     thread.start()
     return thread
