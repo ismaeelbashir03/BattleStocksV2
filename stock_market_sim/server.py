@@ -17,16 +17,14 @@ GLOBAL VARS
 exchanges = {}
 TICKS_PER_SECOND = 1
 
+
 """
-ENDPOINTS
+ENDPOINTS - TODO: add swagger generation with models and flask-restplus
 """
 class Config(Resource):
-    def post(self, exchange_id):
+    def post(self):
         """
         POST request to set the configuration and start the market simulation for a specific exchange.
-
-        Query parameters:
-            - exchange_id: str
 
         Request body:
             - stocks: dict content: {'stock_name': {'price': float}}
@@ -39,7 +37,7 @@ class Config(Resource):
         global exchanges
         
         config_data = request.json
-        exchange_id = str(exchange_id)
+        exchange_id = str(uuid.uuid4())
 
         if exchange_id not in exchanges:
             exchanges[exchange_id] = {
@@ -56,7 +54,7 @@ class Config(Resource):
         
         start_simulation_thread(exchange_id)
 
-        return jsonify({"message": f"Configuration updated and market simulation started for exchange {exchange_id}."})
+        return jsonify({"exchange_id": exchange_id, "message": f"Configuration updated and market simulation started for exchange {exchange_id}."})
 
 class MarketData(Resource):
     def get(self, exchange_id):
