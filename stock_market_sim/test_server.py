@@ -1,148 +1,252 @@
 import pytest
-from time import sleep
-
-from server import app, exchanges, TICKS_PER_SECOND
+import json
+import time
+from server import app
 
 @pytest.fixture
 def client():
     return app.test_client()
 
-@pytest.fixture(scope="session", autouse=True)
-def start_simulations():
-    exchange_ids = []
-    yield exchange_ids
+def test_init_server(client):
+    response = client.get('/init-server')
+    data = json.loads(response.data)
+    assert response.status_code == 200
+    assert 'exchange_id' in data
 
-def test_start_server(client, start_simulations):
-    response = client.post('/start-server', json={
+def test_start_server(client):
+    response = client.get('/init-server')
+    exchange_id = json.loads(response.data)['exchange_id']
+
+    response = client.post(f'/{exchange_id}/start-server', json={
         'stocks': ['AAPL', 'GOOG'],
-        'duration': 1,
-        'difficulty': 1
+        'difficulty': 3
+    })
+    assert response.status_code == 200
+
+def test_market_data(client):
+    response = client.get('/init-server')
+    exchange_id = json.loads(response.data)['exchange_id']
+    
+    response = client.post(f'/{exchange_id}/start-server', json={
+        'stocks': ['AAPL', 'GOOG'],
+        'difficulty': 3
     })
 
+    response = client.get(f'/{exchange_id}/market-data')
     assert response.status_code == 200
-    exchange_id = response.json['exchange_id']
-    start_simulations.append(exchange_id)
-    assert response.json['message'].startswith("Configuration updated and market simulation started for exchange")
 
-    response = client.post('/start-server', json={
+def test_add_news(client):
+    response = client.get('/init-server')
+    exchange_id = json.loads(response.data)['exchange_id']
+
+    response = client.post(f'/{exchange_id}/start-server', json={
         'stocks': ['AAPL', 'GOOG'],
-        'duration': 1,
-        'difficulty': 1
+        'difficulty': 3
     })
 
+    response = client.post(f'/{exchange_id}/add-news', json={
+        'stock': 'AAPL',
+        'impact': 'up'
+    })
     assert response.status_code == 200
-    exchange_id = response.json['exchange_id']
-    start_simulations.append(exchange_id)
-    assert response.json['message'].startswith("Configuration updated and market simulation started for exchange")
 
-def test_get_market_data(client, start_simulations):
-    for exchange_id in start_simulations:
-        response = client.get(f'/{exchange_id}/market-data')
+def test_pause_resume_stop(client):
+    response = client.get('/init-server')
+    exchange_id = json.loads(response.data)['exchange_id']
 
-        assert response.status_code == 200
-        assert 'prices' in response.json
-        assert 'details' in response.json
+    response = client.post(f'/{exchange_id}/start-server', json={
+        'stocks': ['AAPL', 'GOOG'],
+        'difficulty': 3
+    })
 
-def test_place_order_buy(client, start_simulations):
-    for exchange_id in start_simulations:
-        connect_response = client.post(f'/{exchange_id}/connect', json={'name': 'user1'})
-        user_id = connect_response.json['userId']
+    initial_prices = client.get(f'/{exchange_id}/market-data').json['prices']
 
-        response = client.post(f'/{exchange_id}/order', json={
-            'userId': user_id,
-            'stock': 'AAPL',
-            'quantity': 5,
-            'type': 'buy'
-        })
+    response = client.get(f'/{exchange_id}/pause')
+    assert response.status_code == 200
 
-        assert response.status_code == 200
-        assert response.json['message'].startswith("Order executed")
+    time.sleep(2)
 
-def test_place_order_sell(client, start_simulations):
-    for exchange_id in start_simulations:
-        connect_response = client.post(f'/{exchange_id}/connect', json={'name': 'user1'})
-        user_id = connect_response.json['userId']
+    paused_response = client.get(f'/{exchange_id}/market-data')
+    assert paused_response.status_code == 400
+    assert paused_response.json['message'] == 'Market simulation not started.'
 
-        response = client.post(f'/{exchange_id}/order', json={
-            'userId': user_id,
-            'stock': 'AAPL',
-            'quantity': 5,
-            'type': 'sell'
-        })
+    response = client.get(f'/{exchange_id}/resume')
+    assert response.status_code == 200
 
-        assert response.status_code == 200
-        assert response.json['message'].startswith("Order executed")
+    time.sleep(2)
 
-def test_add_news(client, start_simulations):
-    for exchange_id in start_simulations:
-        response = client.post(f'/{exchange_id}/add-news', json={
-            'stock': 'AAPL',
-            'impact': 'up'
-        })
+    resumed_prices = client.get(f'/{exchange_id}/market-data').json['prices']
+    assert resumed_prices != initial_prices
 
-        assert response.status_code == 200
-        assert response.json['message'].startswith("News headline published for exchange")
+    response = client.get(f'/{exchange_id}/stop')
+    assert response.status_code == 200
 
-def test_market_simulation(client, start_simulations):
-    for exchange_id in start_simulations:
-        initial_prices = client.get(f'/{exchange_id}/market-data').json['prices']
-        
-        sleep(10)
-        
-        current_prices = client.get(f'/{exchange_id}/market-data').json['prices']
-        for stock in initial_prices:
-            assert initial_prices[stock] != current_prices[stock]
+    time.sleep(2)
 
-def test_isolation_between_exchanges(client, start_simulations):
+    response = client.get(f'/{exchange_id}/market-data')
+    assert response.status_code == 400
+    assert json.loads(response.data)['message'] == 'Exchange not found.'
 
-    exchange_id_1, exchange_id_2 = start_simulations[:2]
+def test_connect(client):
+    response = client.get('/init-server')
+    exchange_id = json.loads(response.data)['exchange_id']
 
-    connect_response_1 = client.post(f'/{exchange_id_1}/connect', json={'name': 'user1'})
-    assert connect_response_1.status_code == 200
-    user_id_1 = connect_response_1.json['userId']
-    connect_response_2 = client.post(f'/{exchange_id_2}/connect', json={'name': 'user2'})
-    assert connect_response_2.status_code == 200
-    user_id_2 = connect_response_2.json['userId']
+    response = client.post(f'/{exchange_id}/connect', json={'name': 'user1'})
+    assert response.status_code == 200
 
-    client.post(f'/{exchange_id_1}/order', json={
-        'userId': user_id_1,
+    response = client.post(f'/{exchange_id}/connect', json={'name': 'user1'})
+    assert response.status_code == 400
+    assert json.loads(response.data)['message'] == 'Username taken.'
+
+def test_order(client):
+    response = client.get('/init-server')
+    exchange_id = json.loads(response.data)['exchange_id']
+
+    client.post(f'/{exchange_id}/start-server', json={
+        'stocks': ['AAPL', 'GOOG'],
+        'difficulty': 3
+    })
+
+    client.post(f'/{exchange_id}/connect', json={'name': 'user1'})
+
+    response = client.post(f'/{exchange_id}/order', json={
+        'userId': 'user1',
+        'stock': 'AAPL',
+        'quantity': 5,
+        'type': 'buy'
+    })
+    assert response.status_code == 200
+
+    user_data = client.get(f'/{exchange_id}/market-data').json['details']['user1']
+    assert user_data['cash'] < 10000
+    assert 'AAPL' in user_data['assets'] and user_data['assets']['AAPL'] == 5
+
+def test_trade_request(client):
+    response = client.get('/init-server')
+    exchange_id = json.loads(response.data)['exchange_id']
+
+    client.post(f'/{exchange_id}/start-server', json={
+        'stocks': ['AAPL', 'GOOG'],
+        'difficulty': 3
+    })
+
+    client.post(f'/{exchange_id}/connect', json={'name': 'user1'})
+    client.post(f'/{exchange_id}/connect', json={'name': 'user2'})
+
+    client.post(f'/{exchange_id}/order', json={
+        'userId': 'user1',
         'stock': 'AAPL',
         'quantity': 5,
         'type': 'buy'
     })
 
-    client.post(f'/{exchange_id_2}/order', json={
-        'userId': user_id_2,
+    response = client.post(f'/{exchange_id}/trade-request', json={
+        'from_user': 'user1',
+        'to_user': 'user2',
         'stock': 'AAPL',
         'quantity': 5,
+        'price': 100,
+        'type': 'sell'
+    })
+    assert response.status_code == 200
+
+def test_inbox(client):
+    response = client.get('/init-server')
+    exchange_id = json.loads(response.data)['exchange_id']
+
+    client.post(f'/{exchange_id}/start-server', json={
+        'stocks': ['AAPL', 'GOOG'],
+        'difficulty': 3
+    })
+
+    client.post(f'/{exchange_id}/connect', json={'name': 'user1'})
+    client.post(f'/{exchange_id}/connect', json={'name': 'user2'})
+
+    client.post(f'/{exchange_id}/order', json={
+        'userId': 'user1',
+        'stock': 'AAPL',
+        'quantity': 5,
+        'type': 'buy'
+    })
+
+    client.post(f'/{exchange_id}/trade-request', json={
+        'from_user': 'user1',
+        'to_user': 'user2',
+        'stock': 'AAPL',
+        'quantity': 5,
+        'price': 100,
         'type': 'sell'
     })
 
-    sleep(10)
+    response = client.get(f'/{exchange_id}/inbox/user2')
+    assert response.status_code == 200
+    inbox = json.loads(response.data)['inbox']
+    assert len(inbox) > 0
 
-    response_1 = client.get(f'/{exchange_id_1}/market-data')
-    response_2 = client.get(f'/{exchange_id_2}/market-data')
+def test_trade_response(client):
+    response = client.get('/init-server')
+    exchange_id = json.loads(response.data)['exchange_id']
 
-    assert response_1.status_code == 200
-    assert response_2.status_code == 200
-
-    prices_1 = response_1.json['prices']
-    prices_2 = response_2.json['prices']
-
-    assert prices_1['AAPL'] != prices_2['AAPL']
-
-def test_exchange_stops_after_duration(client, start_simulations):
-    response = client.post('/start-server', json={
+    client.post(f'/{exchange_id}/start-server', json={
         'stocks': ['AAPL', 'GOOG'],
-        'duration': 0.25, # 15 seconds
-        'difficulty': 1
+        'difficulty': 3
+    })
+
+    client.post(f'/{exchange_id}/connect', json={'name': 'user1'})
+    client.post(f'/{exchange_id}/connect', json={'name': 'user2'})
+
+    client.post(f'/{exchange_id}/order', json={
+        'userId': 'user1',
+        'stock': 'AAPL',
+        'quantity': 5,
+        'type': 'buy'
+    })
+
+    trade_request_response = client.post(f'/{exchange_id}/trade-request', json={
+        'from_user': 'user1',
+        'to_user': 'user2',
+        'stock': 'AAPL',
+        'quantity': 5,
+        'price': 150,
+        'type': 'sell'
+    })
+
+    request_id = json.loads(trade_request_response.data)['request_id']
+
+    response = client.post(f'/{exchange_id}/trade-response', json={
+        'request_id': request_id,
+        'response': 'accept'
     })
     assert response.status_code == 200
-    exchange_id = response.json['exchange_id']
-    
-    sleep(16)  
-    
-    assert exchange_id not in exchanges
+
+    user_data = client.get(f'/{exchange_id}/market-data').json['details']
+
+    user1_data = next(details for user, details in user_data.items() if user == 'user1')
+    user2_data = next(details for user, details in user_data.items() if user == 'user2')
+
+    assert user1_data['cash'] >= 10000
+    assert 'AAPL' not in user1_data['assets'] or user1_data['assets']['AAPL'] == 0 
+
+    assert user2_data['cash'] < 10000 
+    assert 'AAPL' in user2_data['assets'] and user2_data['assets']['AAPL'] == 5 
+
+def test_get_users(client):
+    response = client.get('/init-server')
+    exchange_id = json.loads(response.data)['exchange_id']
+
+    client.post(f'/{exchange_id}/start-server', json={
+        'stocks': ['AAPL', 'GOOG'],
+        'difficulty': 3
+    })
+
+    client.post(f'/{exchange_id}/connect',json={'name': 'user1'})
+    client.post(f'/{exchange_id}/connect', json={'name': 'user2'})
+    response = client.get(f'/{exchange_id}/get-users')
+    assert response.status_code == 200
+
+    users = json.loads(response.data)['users']
+    assert 'user1' in users
+    assert 'user2' in users
 
 if __name__ == "__main__":
     pytest.main()

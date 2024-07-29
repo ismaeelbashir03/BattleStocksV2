@@ -98,7 +98,10 @@ trade_response_model = api.model('TradeResponse', {
 HOST ENDPOINTS
 '''
 @api.route('/init-server', methods=['GET'])
-@api.response(200, 'Success')
+@api.response(200, 'Success', model=api.model('InitResponse', {
+    'exchange_id': fields.String(description='Unique identifier for the exchange.'),
+    'message': fields.String(description='Description of the action taken.')
+}))
 class Init(Resource):
     def get(self):
         global exchanges
@@ -125,7 +128,13 @@ class Init(Resource):
 
 @api.route('/<string:exchange_id>/start-server', methods=['POST'])
 @api.expect(config_model)
-@api.response(200, 'Success')
+@api.response(200, 'Success', model=api.model('StartResponse', {
+    'exchange_id': fields.String(description='Unique identifier for the exchange.'),
+    'message': fields.String(description='Description of the action taken.')
+}))
+@api.response(400, 'Validation Error', model=api.model('StartResponse', {
+    'message': fields.String(description='Description of the error.')
+}))
 class Start(Resource):
     def post(self, exchange_id):
         global exchanges
@@ -147,8 +156,13 @@ class Start(Resource):
         return response
 
 @api.route('/<string:exchange_id>/market-data', methods=['GET'])
-@api.response(200, 'Success')
-@api.response(400, 'Validation Error')
+@api.response(200, 'Success', model=api.model('MarketDataResponse', {
+    'details': fields.Raw(description='Account details of all users.'),
+    'prices': fields.Raw(description='Current prices of stocks.')
+}))
+@api.response(400, 'Validation Error', model=api.model('ErrorResponse', {
+    'message': fields.String(description='Error message.')
+}))
 class MarketData(Resource):
     def get(self, exchange_id):
         global exchanges
@@ -174,8 +188,12 @@ class MarketData(Resource):
 
 @api.route('/<string:exchange_id>/add-news', methods=['POST'])
 @api.expect(news_model)
-@api.response(200, 'Success')
-@api.response(400, 'Validation Error')
+@api.response(200, 'Success', model=api.model('NewsResponse', {
+    'message': fields.String(description='Description of the action taken.')
+}))
+@api.response(400, 'Validation Error', model=api.model('ErrorResponse', {
+    'message': fields.String(description='Error message.')
+}))
 class News(Resource):
     def post(self, exchange_id):
         global exchanges
@@ -196,8 +214,12 @@ class News(Resource):
         return response
 
 @api.route('/<string:exchange_id>/pause', methods=['GET'])
-@api.response(200, 'Success')
-@api.response(400, 'Validation Error')
+@api.response(200, 'Success', model=api.model('PauseResponse', {
+    'message': fields.String(description='Description of the action taken.')
+}))
+@api.response(400, 'Validation Error', model=api.model('ErrorResponse', {
+    'message': fields.String(description='Error message.')
+}))
 class Pause(Resource):
     def get(self, exchange_id):
         global exchanges
@@ -216,8 +238,12 @@ class Pause(Resource):
         return response
 
 @api.route('/<string:exchange_id>/resume', methods=['GET'])
-@api.response(200, 'Success')
-@api.response(400, 'Validation Error')
+@api.response(200, 'Success', model=api.model('ResumeResponse', {
+    'message': fields.String(description='Description of the action taken.')
+}))
+@api.response(400, 'Validation Error', model=api.model('ErrorResponse', {
+    'message': fields.String(description='Error message.')
+}))
 class Resume(Resource):
     def get(self, exchange_id):
         global exchanges
@@ -236,8 +262,12 @@ class Resume(Resource):
         return response
     
 @api.route('/<string:exchange_id>/stop', methods=['GET'])
-@api.response(200, 'Success')
-@api.response(400, 'Validation Error')
+@api.response(200, 'Success', model=api.model('StopResponse', {
+    'message': fields.String(description='Description of the action taken.')
+}))
+@api.response(400, 'Validation Error', model=api.model('ErrorResponse', {
+    'message': fields.String(description='Error message.')
+}))
 class Stop(Resource):
     def get(self, exchange_id):
         global exchanges
@@ -261,8 +291,12 @@ CLIENT ENDPOINTS
 '''
 @api.route('/<string:exchange_id>/connect', methods=['POST'])
 @api.expect(connect_model)
-@api.response(200, 'Success')
-@api.response(400, 'Validation Error')
+@api.response(200, 'Success', model=api.model('ConnectResponse', {
+    'message': fields.String(description='Description of the action taken.')
+}))
+@api.response(400, 'Validation Error', model=api.model('ErrorResponse', {
+    'message': fields.String(description='Error message.')
+}))
 class Connect(Resource):
     def post(self, exchange_id):
         global exchanges
@@ -287,8 +321,12 @@ class Connect(Resource):
 
 @api.route('/<string:exchange_id>/order', methods=['POST'])
 @api.expect(order_model)
-@api.response(200, 'Success')
-@api.response(400, 'Validation Error')
+@api.response(200, 'Success', model=api.model('OrderResponse', {
+    'message': fields.String(description='Description of the action taken.')
+}))
+@api.response(400, 'Validation Error', model=api.model('ErrorResponse', {
+    'message': fields.String(description='Error message.')
+}))
 class Orders(Resource):
     def post(self, exchange_id):
         global exchanges
@@ -338,8 +376,13 @@ class Orders(Resource):
 
 @api.route('/<string:exchange_id>/trade-request', methods=['POST'])
 @api.expect(trade_request_model)
-@api.response(200, 'Success')
-@api.response(400, 'Validation Error')
+@api.response(200, 'Success', model=api.model('TradeRequestResponse', {
+    'message': fields.String(description='Description of the action taken.'),
+    'request_id': fields.String(description='Unique identifier for the trade request.')
+}))
+@api.response(400, 'Validation Error', model=api.model('ErrorResponse', {
+    'message': fields.String(description='Error message.')
+}))
 class TradeRequest(Resource):
     def post(self, exchange_id):
         global exchanges, trade_requests
@@ -376,8 +419,12 @@ class TradeRequest(Resource):
         return response
 
 @api.route('/<string:exchange_id>/inbox/<string:user_id>', methods=['GET'])
-@api.response(200, 'Success')
-@api.response(400, 'Validation Error')
+@api.response(200, 'Success', model=api.model('InboxResponse', {
+    'inbox': fields.Raw(description='List of pending trade requests for the user.')
+}))
+@api.response(400, 'Validation Error', model=api.model('ErrorResponse', {
+    'message': fields.String(description='Error message.')
+}))
 class Inbox(Resource):
     def get(self, exchange_id, user_id):
         global trade_requests
@@ -403,8 +450,12 @@ class Inbox(Resource):
     
 @api.route('/<string:exchange_id>/trade-response', methods=['POST'])
 @api.expect(trade_response_model)
-@api.response(200, 'Success')
-@api.response(400, 'Validation Error')
+@api.response(200, 'Success', model=api.model('TradeResponseResponse', {
+    'message': fields.String(description='Description of the action taken.')
+}))
+@api.response(400, 'Validation Error', model=api.model('ErrorResponse', {
+    'message': fields.String(description='Error message.')
+}))
 class TradeResponse(Resource):
     def post(self, exchange_id):
         global exchanges, trade_requests
@@ -478,8 +529,12 @@ class TradeResponse(Resource):
         return response
     
 @api.route('/<string:exchange_id>/get-users', methods=['GET'])
-@api.response(200, 'Success')
-@api.response(400, 'Validation Error')
+@api.response(200, 'Success', model=api.model('GetUsersResponse', {
+    'users': fields.List(fields.String, description='List of connected users.')
+}))
+@api.response(400, 'Validation Error', model=api.model('ErrorResponse', {
+    'message': fields.String(description='Error message.')
+}))
 class GetUsers(Resource):
     def get(self, exchange_id):
         global exchanges
