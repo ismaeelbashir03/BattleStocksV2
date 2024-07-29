@@ -21,7 +21,8 @@ GLOBAL VARS
 '''
 exchanges = {}
 trade_requests = {}
-TICKS_PER_SECOND = 1
+SECONDS_PER_TICK = 1
+THREAD_TIMEOUT = 60
 CODE_LENGTH = 6
 NEWS_IMPACT_DURATION = 10
 DIFFICULTY_MAP = {
@@ -52,7 +53,7 @@ DIFFICULTY_MAP = {
     }
 }
 STARTING_PRICE_RANGE = range(50, 150)
-STARTING_CASH = 1000
+STARTING_CASH = 10000
 
 
 '''
@@ -60,7 +61,6 @@ MODELS
 '''
 config_model = api.model('ConfigBody', {
     'stocks': fields.List(fields.String, required=True, description='List of stocks to include in the simulation.'),
-    'duration': fields.Integer(required=True, description='Duration of the simulation in minutes.'),
     'difficulty': fields.Integer(required=True, description='Difficulty level of the simulation (1 to 5 inclusive).'),
 })
 
@@ -97,33 +97,42 @@ trade_response_model = api.model('TradeResponse', {
 '''
 HOST ENDPOINTS
 '''
-@api.route('/start-server', methods=['POST'])
-@api.expect(config_model)
+@api.route('/init-server', methods=['GET'])
 @api.response(200, 'Success')
-class Config(Resource):
-    def post(self):
+class Init(Resource):
+    def get(self):
         global exchanges
         
-        config_data = request.json
-        duration = config_data['duration']
-        settings = DIFFICULTY_MAP[config_data['difficulty']]
-        stocks = {stock: random.choice(STARTING_PRICE_RANGE) for stock in config_data['stocks']}
-        
+        # get unique exchange id
         exchange_id = ''.join(random.choice(string.ascii_uppercase + string.digits) for _ in range(CODE_LENGTH))
-
         while exchange_id in exchanges:
             exchange_id = ''.join(random.choice(string.ascii_lowercase + string.ascii_uppercase + string.digits) for _ in range(CODE_LENGTH))
 
-        if exchange_id not in exchanges:
-            exchanges[exchange_id] = {
-                'settings': {},
-                'stocks': {},
-                'news_headlines': deque(),
-                'users': {},
-                'tick_count': 0,
-                'STARTED': False,
-                'lock': threading.Lock()
-            }
+        exchanges[exchange_id] = {
+            'settings': {},
+            'stocks': {},
+            'news_headlines': deque(),
+            'users': {},
+            'tick_count': 0,
+            'STARTED': False,
+            'kill': False,
+            'lock': threading.Lock()
+        }
+
+        response = jsonify({'exchange_id': exchange_id, 'message': f'Created Exchange {exchange_id}.'})
+        response.status_code = 200
+        return response
+
+@api.route('/<string:exchange_id>/start-server', methods=['POST'])
+@api.expect(config_model)
+@api.response(200, 'Success')
+class Start(Resource):
+    def post(self, exchange_id):
+        global exchanges
+        
+        config_data = request.json
+        settings = DIFFICULTY_MAP[config_data['difficulty']]
+        stocks = {stock: random.choice(STARTING_PRICE_RANGE) for stock in config_data['stocks']}
         
         with exchanges[exchange_id]['lock']:
             exchanges[exchange_id]['settings'].update(settings)
@@ -131,7 +140,7 @@ class Config(Resource):
             exchanges[exchange_id]['tick_count'] = 0
             exchanges[exchange_id]['STARTED'] = True
         
-        start_simulation_thread(exchange_id, duration)
+        start_simulation_thread(exchange_id, THREAD_TIMEOUT)
 
         response = jsonify({'exchange_id': exchange_id, 'message': f'Configuration updated and market simulation started for exchange {exchange_id}.'})
         response.status_code = 200
@@ -156,7 +165,7 @@ class MarketData(Resource):
                 response.status_code = 400
                 return response
             
-            account_details = [details for details in exchanges[exchange_id]['users'].values()]
+            account_details = {userId: details for userId, details in exchanges[exchange_id]['users'].items()}
             prices = exchanges[exchange_id]['stocks']
 
             response = jsonify({'details': account_details, 'prices': prices})
@@ -170,8 +179,8 @@ class MarketData(Resource):
 class News(Resource):
     def post(self, exchange_id):
         global exchanges
-        exchange_id = str(exchange_id)
 
+        exchange_id = str(exchange_id)
         if exchange_id not in exchanges:
             response = jsonify({'message': 'Exchange not found.'})
             response.status_code = 400
@@ -186,6 +195,66 @@ class News(Resource):
         response.status_code = 200
         return response
 
+@api.route('/<string:exchange_id>/pause', methods=['GET'])
+@api.response(200, 'Success')
+@api.response(400, 'Validation Error')
+class Pause(Resource):
+    def get(self, exchange_id):
+        global exchanges
+
+        exchange_id = str(exchange_id)
+        if exchange_id not in exchanges:
+            response = jsonify({'message': 'Exchange not found.'})
+            response.status_code = 400
+            return response
+
+        with exchanges[exchange_id]['lock']:
+            exchanges[exchange_id]['STARTED'] = False
+
+        response = jsonify({'message': f'Market simulation paused for exchange {exchange_id}.'})
+        response.status_code = 200
+        return response
+
+@api.route('/<string:exchange_id>/resume', methods=['GET'])
+@api.response(200, 'Success')
+@api.response(400, 'Validation Error')
+class Resume(Resource):
+    def get(self, exchange_id):
+        global exchanges
+
+        exchange_id = str(exchange_id)
+        if exchange_id not in exchanges:
+            response = jsonify({'message': 'Exchange not found.'})
+            response.status_code = 400
+            return response
+
+        with exchanges[exchange_id]['lock']:
+            exchanges[exchange_id]['STARTED'] = True
+
+        response = jsonify({'message': f'Market simulation resumed for exchange {exchange_id}.'})
+        response.status_code = 200
+        return response
+    
+@api.route('/<string:exchange_id>/stop', methods=['GET'])
+@api.response(200, 'Success')
+@api.response(400, 'Validation Error')
+class Stop(Resource):
+    def get(self, exchange_id):
+        global exchanges
+
+        exchange_id = str(exchange_id)
+        if exchange_id not in exchanges:
+            response = jsonify({'message': 'Exchange not found.'})
+            response.status_code = 400
+            return response
+
+        with exchanges[exchange_id]['lock']:
+            exchanges[exchange_id]['kill'] = True
+
+        response = jsonify({'message': f'Market simulation stopped for exchange {exchange_id}.'})
+        response.status_code = 200
+        return response
+    
 
 '''
 CLIENT ENDPOINTS
@@ -198,17 +267,21 @@ class Connect(Resource):
     def post(self, exchange_id):
         global exchanges
 
-        name = request.json['name']
-        userId = str(uuid.uuid4())
+        userId = request.json['name']
         
         if exchange_id not in exchanges:
             response = jsonify({'message': 'Exchange not found.'})
             response.status_code = 400
             return response
         
-        exchanges[exchange_id]['users'].update({userId: {'name': name, 'cash': STARTING_CASH, 'assets': {}, 'value': STARTING_CASH}})
+        if userId in exchanges[exchange_id]['users']:
+            response = jsonify({'message': 'Username taken.'})
+            response.status_code = 400
+            return response
+        
+        exchanges[exchange_id]['users'].update({userId: {'cash': STARTING_CASH, 'assets': {}, 'value': STARTING_CASH}})
 
-        response = jsonify({'userId': userId})
+        response = jsonify({'message': f"User {userId} connected to exchange {exchange_id}."})
         response.status_code = 200
         return response
 
@@ -345,7 +418,7 @@ class TradeResponse(Resource):
             return response
 
         request_id = response_data['request_id']
-        print(trade_requests)
+
         if request_id not in trade_requests:
             response = jsonify({'message': 'Trade request not found.'})
             response.status_code = 400
@@ -419,22 +492,22 @@ class GetUsers(Resource):
             return response
 
         with exchanges[exchange_id]['lock']:
-            if not exchanges[exchange_id]['STARTED']:
-                response = jsonify({'message': 'Market simulation not started.'})
-                response.status_code = 400
-                return response
             
-            users = exchanges[exchange_id]['users']
+            users = {"users": [user for user in exchanges[exchange_id]['users']]}
 
-            response = jsonify({'users': users})
+            response = jsonify(users)
             response.status_code = 200
             return response
 
 '''
 ROUTES
 '''
+api.add_resource(Init, '/init-server')
+api.add_resource(Pause, '/<string:exchange_id>/pause')
+api.add_resource(Resume, '/<string:exchange_id>/resume')
+api.add_resource(Stop, '/<string:exchange_id>/stop')
+api.add_resource(Start, '/<string:exchange_id>/start-server')
 api.add_resource(News, '/<string:exchange_id>/add-news')
-api.add_resource(Config, '/start-server')
 api.add_resource(MarketData, '/<string:exchange_id>/market-data')
 api.add_resource(Connect, '/<string:exchange_id>/connect')
 api.add_resource(Orders, '/<string:exchange_id>/order')
@@ -481,32 +554,27 @@ def simulate_market(exchange_id: str, timeout: int):
     """
     Simulate the stock market for a given exchange.
     :param exchange_id: The exchange ID.
-    :param timeout: The duration of the simulation in minutes.
+    :param timeout: Timeout for the simulation in minutes.
     """
     global exchanges
 
-    start = time.time()
     decay_effects: List[DecayEffect] = []
 
     while True:
-        if time.time() - start > timeout * 60:
-            with exchanges[exchange_id]['lock']:
-                exchanges[exchange_id]['STARTED'] = False
-            break
-
-        time.sleep(TICKS_PER_SECOND)
-
         with exchanges[exchange_id]['lock']:
             if not exchanges[exchange_id]['STARTED']:
+                time.sleep(SECONDS_PER_TICK)
                 continue
 
-            exchanges[exchange_id]['tick_count'] += 1
+            if SECONDS_PER_TICK * exchanges[exchange_id]['tick_count'] >= timeout * 60 or exchanges[exchange_id]['kill']:
+                exchanges[exchange_id]['STARTED'] = False
+                break
+
             config = exchanges[exchange_id]
 
             if len(decay_effects) == 0: # only update stock prices randomly if there are no decay effects
                 for stock in config['stocks']:
                     config['stocks'][stock] += random.gauss(0, config['settings']['stock_std'])
-            
             
             for effect in decay_effects[:]:
                 config['stocks'][effect.stock] = effect.decay(config['stocks'][effect.stock])
@@ -525,6 +593,9 @@ def simulate_market(exchange_id: str, timeout: int):
                 for stock, quantity in user['assets'].items():
                     user['value'] += config['stocks'][stock] * quantity
                 config['users'][user_id] = user
+            
+            exchanges[exchange_id]['tick_count'] += 1
+            time.sleep(SECONDS_PER_TICK)
         
     # delete exchange if simulation is over
     del exchanges[exchange_id]
@@ -533,7 +604,7 @@ def start_simulation_thread(exchange_id: str, timeout: int) -> threading.Thread:
     """
     Start a thread to simulate the stock market for a given exchange.
     :param exchange_id: The exchange ID.
-    :param timeout: The duration of the simulation in minutes.
+    :param timeout: Timeout for the simulation in minutes.
     :return: The thread object.
     """
     thread = threading.Thread(target=simulate_market, args=(exchange_id, timeout,))
