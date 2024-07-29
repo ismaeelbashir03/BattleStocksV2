@@ -20,6 +20,7 @@ api = Api(app)
 GLOBAL VARS
 '''
 exchanges = {}
+trade_requests = {}
 TICKS_PER_SECOND = 1
 CODE_LENGTH = 6
 NEWS_IMPACT_DURATION = 10
@@ -79,6 +80,19 @@ connect_model = api.model('ConnectBody', {
     'name': fields.String(required=True, description='Name of the user connecting to the exchange.'),
 })
 
+trade_request_model = api.model('TradeRequest', {
+    'from_user': fields.String(required=True, description='User ID of the sender.'),
+    'to_user': fields.String(required=True, description='User ID of the receiver.'),
+    'stock': fields.String(required=True, description='Stock to be traded.'),
+    'quantity': fields.Integer(required=True, description='Quantity of stock to be traded.'),
+    'price': fields.Float(required=True, description='Proposed price per stock.'),
+    'type': fields.String(required=True, description='Type of trade (buy or sell).')
+})
+
+trade_response_model = api.model('TradeResponse', {
+    'request_id': fields.String(required=True, description='ID of the trade request.'),
+    'response': fields.String(required=True, description='Response to the trade request (accept or decline).')
+})
 
 '''
 HOST ENDPOINTS
@@ -186,12 +200,13 @@ class Connect(Resource):
 
         name = request.json['name']
         userId = str(uuid.uuid4())
-        exchanges[exchange_id]['users'].update({userId: {'name': name, 'cash': STARTING_CASH, 'assets': {}, 'value': STARTING_CASH}})
-
+        
         if exchange_id not in exchanges:
             response = jsonify({'message': 'Exchange not found.'})
             response.status_code = 400
             return response
+        
+        exchanges[exchange_id]['users'].update({userId: {'name': name, 'cash': STARTING_CASH, 'assets': {}, 'value': STARTING_CASH}})
 
         response = jsonify({'userId': userId})
         response.status_code = 200
@@ -237,13 +252,183 @@ class Orders(Resource):
             elif order_data['type'] == 'sell' and user['assets'].get(stock, 0) >= quantity:
                 user['cash'] += quantity * price
                 user['assets'][stock] -= quantity
+            else:
+                response = jsonify({'message': 'Order cannot be executed due to insufficient funds or stocks.'})
+                response.status_code = 400
+                return response
             
             exchanges[exchange_id]['users'][user_id] = user
-
+        
         response = jsonify({'message': f'Order executed: {order_data["type"]} {quantity} {stock} for {price}.'})
         response.status_code = 200
         return response
 
+@api.route('/<string:exchange_id>/trade-request', methods=['POST'])
+@api.expect(trade_request_model)
+@api.response(200, 'Success')
+@api.response(400, 'Validation Error')
+class TradeRequest(Resource):
+    def post(self, exchange_id):
+        global exchanges, trade_requests
+
+        exchange_id = str(exchange_id)
+        request_data = request.json
+
+        if exchange_id not in exchanges:
+            response = jsonify({'message': 'Exchange not found.'})
+            response.status_code = 400
+            return response
+
+        from_user = request_data['from_user']
+        to_user = request_data['to_user']
+        if from_user not in exchanges[exchange_id]['users'] or to_user not in exchanges[exchange_id]['users']:
+            response = jsonify({'message': 'User not found.'})
+            response.status_code = 400
+            return response
+
+        request_id = str(uuid.uuid4())
+        trade_requests[request_id] = {
+            'exchange_id': exchange_id,
+            'from_user': from_user,
+            'to_user': to_user,
+            'stock': request_data['stock'],
+            'quantity': request_data['quantity'],
+            'price': request_data['price'],
+            'type': request_data['type'],
+            'status': 'pending'
+        }
+
+        response = jsonify({'message': 'Trade request sent.', 'request_id': request_id})
+        response.status_code = 200
+        return response
+
+@api.route('/<string:exchange_id>/inbox/<string:user_id>', methods=['GET'])
+@api.response(200, 'Success')
+@api.response(400, 'Validation Error')
+class Inbox(Resource):
+    def get(self, exchange_id, user_id):
+        global trade_requests
+
+        exchange_id = str(exchange_id)
+        user_id = str(user_id)
+
+        if exchange_id not in exchanges:
+            response = jsonify({'message': 'Exchange not found.'})
+            response.status_code = 400
+            return response
+
+        if user_id not in exchanges[exchange_id]['users']:
+            response = jsonify({'message': 'User not found.'})
+            response.status_code = 400
+            return response
+
+        user_inbox = {req_id: req for req_id, req in trade_requests.items() if req['to_user'] == user_id and req['exchange_id'] == exchange_id and req['status'] == 'pending'}
+
+        response = jsonify({'inbox': user_inbox})
+        response.status_code = 200
+        return response
+    
+@api.route('/<string:exchange_id>/trade-response', methods=['POST'])
+@api.expect(trade_response_model)
+@api.response(200, 'Success')
+@api.response(400, 'Validation Error')
+class TradeResponse(Resource):
+    def post(self, exchange_id):
+        global exchanges, trade_requests
+
+        exchange_id = str(exchange_id)
+        response_data = request.json
+
+        if exchange_id not in exchanges:
+            response = jsonify({'message': 'Exchange not found.'})
+            response.status_code = 400
+            return response
+
+        request_id = response_data['request_id']
+        print(trade_requests)
+        if request_id not in trade_requests:
+            response = jsonify({'message': 'Trade request not found.'})
+            response.status_code = 400
+            return response
+
+        trade_request = trade_requests[request_id]
+        if trade_request['exchange_id'] != exchange_id:
+            response = jsonify({'message': 'Trade request does not belong to this exchange.'})
+            response.status_code = 400
+            return response
+
+        if response_data['response'] == 'accept':
+            from_user = trade_request['from_user']
+            to_user = trade_request['to_user']
+            stock = trade_request['stock']
+            quantity = trade_request['quantity']
+            price = trade_request['price']
+            type = trade_request['type']
+
+            with exchanges[exchange_id]['lock']:
+                if type == 'sell':
+                    if exchanges[exchange_id]['users'][to_user]['cash'] >= quantity * price and exchanges[exchange_id]['users'][from_user]['assets'].get(stock, 0) >= quantity:
+                        exchanges[exchange_id]['users'][to_user]['cash'] -= quantity * price
+                        exchanges[exchange_id]['users'][to_user]['assets'][stock] = exchanges[exchange_id]['users'][to_user]['assets'].get(stock, 0) + quantity
+
+                        exchanges[exchange_id]['users'][from_user]['cash'] += quantity * price
+                        exchanges[exchange_id]['users'][from_user]['assets'][stock] -= quantity
+
+                        trade_request['status'] = 'accepted'
+                        response = jsonify({'message': 'Trade request accepted.'})
+                        response.status_code = 200
+                        return response
+                    else:
+                        response = jsonify({'message': 'Trade cannot be completed due to insufficient funds or stocks.'})
+                        response.status_code = 400
+                        return response
+                else:
+                    if exchanges[exchange_id]['users'][from_user]['cash'] >= quantity * price and exchanges[exchange_id]['users'][to_user]['assets'].get(stock, 0) >= quantity:
+                        exchanges[exchange_id]['users'][from_user]['cash'] -= quantity * price
+                        exchanges[exchange_id]['users'][from_user]['assets'][stock] = exchanges[exchange_id]['users'][from_user]['assets'].get(stock, 0) + quantity
+
+                        exchanges[exchange_id]['users'][to_user]['cash'] += quantity * price
+                        exchanges[exchange_id]['users'][to_user]['assets'][stock] -= quantity
+
+                        trade_request['status'] = 'accepted'
+                        response = jsonify({'message': 'Trade request accepted.'})
+                        response.status_code = 200
+                        return response
+                    else:
+                        response = jsonify({'message': 'Trade cannot be completed due to insufficient funds or stocks.'})
+                        response.status_code = 400
+                        return response
+
+        trade_request['status'] = 'declined'
+        response = jsonify({'message': 'Trade request declined.'})
+        response.status_code = 200
+        return response
+    
+@api.route('/<string:exchange_id>/get-users', methods=['GET'])
+@api.response(200, 'Success')
+@api.response(400, 'Validation Error')
+class GetUsers(Resource):
+    def get(self, exchange_id):
+        global exchanges
+
+        exchange_id = str(exchange_id)
+
+        if exchange_id not in exchanges:
+            response = jsonify({'message': 'Exchange not found.'})
+            response.status_code = 400
+            return response
+
+        with exchanges[exchange_id]['lock']:
+            if not exchanges[exchange_id]['STARTED']:
+                response = jsonify({'message': 'Market simulation not started.'})
+                response.status_code = 400
+                return response
+            
+            users = exchanges[exchange_id]['users']
+
+            response = jsonify({'users': users})
+            response.status_code = 200
+            return response
 
 '''
 ROUTES
@@ -253,6 +438,9 @@ api.add_resource(Config, '/start-server')
 api.add_resource(MarketData, '/<string:exchange_id>/market-data')
 api.add_resource(Connect, '/<string:exchange_id>/connect')
 api.add_resource(Orders, '/<string:exchange_id>/order')
+api.add_resource(TradeRequest, '/<string:exchange_id>/trade-request')
+api.add_resource(Inbox, '/<string:exchange_id>/inbox/<string:user_id>')
+api.add_resource(TradeResponse, '/<string:exchange_id>/trade-response')
 
 
 '''
