@@ -6,7 +6,6 @@ from namespaces.client import api as client_ns
 app = Flask(__name__)
 api = Api(app)
 
-# Add namespaces
 api.add_namespace(host_ns, path='/host')
 api.add_namespace(client_ns, path='/client')
 
